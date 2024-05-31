@@ -1,0 +1,509 @@
+---
+title: "Lab 3"
+output:
+  pdf_document:
+    latex_engine: xelatex
+  latex_engine: default
+date: "2024-05-02"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(BayesLogit)
+library(mvtnorm)
+library(rstan)
+library(readxl) #to read excel files
+```
+
+#Question-1
+
+#a) 
+Consider again the logistic regression model in problem 2 from the previous computer lab 2. Use the prior beta ∼ N(0,tau^2 * I), where tau = 3.
+
+Implement a Gibbs sampler that simulates from the joint posterior p(w, beta|x) by augmenting the data with Polya-gamma latent variables wi , i =
+1, . . . , n. Evaluate the convergence of the Gibbs sampler by calculating the Inefficiency Factors (IFs) and by plotting the trajectories of the sampled Markov chains.
+
+Given w = (w1, ..., wn), the conditional posterior of beta with prior beta ∼ N (b, B ) follows a multivariate normal distribution.
+
+$$ ωi|β ∼ PG(1,xi′β), i = 1,...,n.$$ 
+
+PG() => solved using the rpg() function from the bayeslogit package. 
+$$ β|y,ω∼N(mω,Vω) $$
+where
+$$ Vω = (X^T*Ω*X + B^−1)^−1 $$
+$$ mw =Vw *(X^Tκ+B^−1*b) $$
+
+where 
+$$ κ = (y1 −1/2,... ,yn −1/2) $$ 
+and Ω is the diagonal matrix of wi's.
+
+
+Inefficiency factor:
+$$  1 + 2 ∑ρk .$$
+ where pk is solved using the acf(). 
+
+```{r}
+#Q.1) a) 
+women_data <- as.matrix(read.table("WomenAtWork.dat", header=TRUE))
+n_params <- ncol(women_data) - 1
+n_obs <- nrow(women_data)
+
+y <- women_data[1:n_obs, 1]
+X <- women_data[1:n_obs, 2:ncol(women_data)]
+x_names <- colnames(X)
+
+# Set up prior
+tau <- 3
+mu <- matrix(0, n_params) # Prior mean vector
+Sigma <- tau ** 2 * diag(n_params)
+
+# log_post_logistic <- function(betas, y, X, mu, Sigma) {
+#   lin_pred <- X %*% betas
+#   log_lik <- sum(lin_pred * y - log(1 + exp(lin_pred)))
+#   log_prior <- dmvnorm(betas, mu, Sigma, log=TRUE)
+#   
+#   return(log_lik + log_prior)
+# }
+
+# Initial values for beta
+init_val <- matrix(0, n_params)
+
+# Optimize betas
+# optim_res <- optim(init_val, log_post_logistic, gr=NULL, y, X, mu, Sigma, 
+#                    method=c("BFGS"), control=list(fnscale=-1), hessian=TRUE)
+# rownames(optim_res$par) <- x_names
+
+
+
+###
+
+beta<-list()
+beta[[1]]<-init_val
+
+draws<- 1000
+
+j<-2
+
+for (i in 1:draws){
+  value1<-X %*% beta[[i]]
+  
+  w<-c()
+  for (l in 1:n_obs){
+    w[l]<-rpg(1,h=1, z =value1[l])
+  }
+  
+  Vw<-solve(t(X)%*%diag(w)%*%X+solve(Sigma))
+  
+  k<-y-0.5
+    
+  Mw<-Vw%*%(t(X)%*%k)
+  
+  beta[[j]]<-t(rmvnorm(1,mean = Mw,sigma = Vw))
+  
+  j<-j+1
+}
+
+beta_post<-c()
+
+for (j in 1:7){
+  values<-c()
+  for (i in 1:length(beta)){
+    values[i]<-beta[[i]][j]
+  }
+  beta_post[j]<-mean(values)
+}
+
+#beta_post #Values are similar to that of lab-2 
+
+
+# Calculating the IF for each of the coefficients using acf: 
+betas<-list()
+for (j in 1:7){
+  values<-c()
+  for (i in 1:length(beta)){
+    values[i]<-beta[[i]][j]
+  }
+  betas[[j]]<-values
+}
+
+I_factor<-c()
+for (i in 1:7){
+  a<-acf(betas[[i]],plot = FALSE)
+  I_factor[i]<-1+2*sum(a$acf)
+}
+
+cat("IF values for all the betas:",I_factor) #For all the beta values 
+
+#Plotting the convergence: 
+for ( i in 1:7){
+plot(betas[[i]], type = "l", main = paste0("beta",i-1))
+}
+
+```
+
+
+
+# b) 
+Use the posterior draws from a) to compute a 90% equal tail credible interval for Pr(y = 1|x), where the values of x corresponds to a 38-year-old woman, with one child (3 years old), 12 years of education, 7 years of experience, and a husband with an income of 22. A 90% equal tail credible interval (a, b) cuts off 5% percent of the posterior probability mass to the left of a, and 5% to the right of b.
+
+
+```{r}
+#Q.1) b) 
+
+x <- c(1, 22, 12, 7, 38, 1, 0)
+
+prediction<-c()
+for (i in 1:draws){
+  prediction[i]<-exp(t(beta[[i]])%*%x)/(1+exp(t(beta[[i]])%*%x))
+}
+
+
+#plot it and find the 90% interval 
+hist(prediction)
+
+low<-qnorm(0.05, mean=mean(prediction),sd=sd(prediction))
+high<-qnorm(0.95, mean=mean(prediction),sd=sd(prediction))
+
+abline(v=low, col = "red")
+abline(v=high , col = "red")
+
+```
+
+
+
+
+# 2 - Metropolis Random Walk for Poisson Regression
+
+Consider the following Poisson regression model: 
+
+$$ yi|β∼Poisson (exp(xi^tβ)) ,i=1,...,n,$$
+where yi is the count for the ith observation in the sample and xi is the p-dimensional vector with covariate observations for the ith observation.his dataset contains observations from 800 eBay auctions of coins. The response variable is nBids and records the number of bids in each auction.
+
+## a)
+Obtain the maximum likelihood estimator of beta in the Poisson regression model for the eBay data 
+```{r 2a}
+# Read data
+data <- read.table("eBayNumberOfBidderData_2024.dat", header=TRUE)
+X <- as.matrix(data[, 2:ncol(data)])
+y <- data[, 1]
+
+# Get maximum likelihood estimator of beta
+pois_mod <- glm(nBids ~ . - Const, family="poisson", data=data)
+summary(pois_mod)
+```
+
+The intercept and variables VerifyID, Sealed, MajBlem, LogBook, and MinBidShare are significant.
+
+## b)
+
+$$ P(yi∣λi)=(λ^y*e^−λ)/y$$
+ Let's do a Bayesian analysis of the Poisson regression. Let the prior be:
+ $$ β ∼ N (0, 100 * (X^T X)^−1)  $$
+ where X is the n × p covariate matrix. 
+ 
+ Assume that the posterior density is approximately multivariate normal:
+
+$$ β|y ∼ N (β ̃,J^−1(β ))$$
+
+```{r 2b}
+log_post_poisson <- function(betas, X, y) {
+  # Prior params
+  mu <- rep(0, ncol(X))
+  Sigma <- 100 * solve(t(X) %*% X)
+  
+  lin_pred <- X %*% betas
+  log_lik <- sum(y * lin_pred - exp(lin_pred))
+  log_prior <- dmvnorm(as.vector(betas), mu, Sigma, log=TRUE)
+  
+  return(log_lik + log_prior)
+}
+
+# Initial values for beta
+init_val <- matrix(0, ncol(X))
+
+# Optimize betas
+optim_res <- optim(init_val, log_post_poisson, gr=NULL, X, y, 
+                   method=c("BFGS"), control=list(fnscale=-1), hessian=TRUE)
+names(optim_res$par) <- colnames(X)
+
+approx_post_std <- sqrt(diag(solve(-optim_res$hessian)))  
+names(approx_post_std) <- colnames(X)
+
+# Print results
+cat("Posterior mode:\n", optim_res$par, 
+    "\n\nApprox. posterior std.:\n", approx_post_std)
+```
+
+## c)
+
+Let's simulate from the actual posterior of β using the Metropolis algorithm and compare the results with the approximate results in b). Program a general function that uses the Metropolis algorithm to generate random draws from an arbitrary posterior density. In order to show that it is a general function for any model, we denote the vector of model parameters by theta.
+
+Note:  The first argument of your (log) posterior function should be theta, the vector of parameters for which the posterior density is evaluated
+
+$$ θp|θ(i−1) ∼ N (θ(i−1), c · Σ)$$
+
+Compute the acceptance probability: 
+
+$$ α = min (1, p(θp|y)/p(θ(i−1)|y))$$
+
+
+$$ p(θp|y)/p(θ(i−1)|y) = exp( log p(θp|y) − log p(θ(i−1)|y))$$
+
+```{r 2c}
+# Function to draw samples using MH algorithm
+metropolis_hastings <- function(theta, n_samples, log_post_fun, X, y, 
+                                Sigma, const) {
+  sample <- matrix(nrow=n_samples, ncol=nrow(theta))
+  
+  for (i in 1:n_samples) {
+    sample_proposal <- t(rmvnorm(1, theta, const * Sigma))
+    mh_ratio <- exp(log_post_fun(sample_proposal, X, y) 
+                    - log_post_fun(theta, X, y))
+    acc_prob <- min(1, mh_ratio)
+    
+    # If accepted add proposal to sample, else add previous to sample
+    if (runif(1) <= acc_prob) {
+      theta <- sample_proposal
+    }
+    
+    sample[i,] <- theta
+  }
+  
+  return(sample)
+}
+
+# Get sample and visualize convergence
+sample <- metropolis_hastings(init_val, 2000, log_post_poisson, X, y, 
+                              solve(-optim_res$hessian), 1)
+
+for (col in 1:ncol(sample)) {
+  plot(sample[, col], type="l", main=paste0("Beta of ", colnames(X)[col]))
+}
+```
+
+## d)
+Use the MCMC draws from c) to simulate from the predictive distribution of the number of bidders in a new auction with the characteristics below. Plot the predictive distribution. What is the probability of no bidders in this new auction?
+
+```{r 2d}
+x <- c(1, 1, 0, 1, 0, 1, 0, 1.2, 0.8)
+y_pred <- exp(sample %*% x) 
+
+
+output<-c() 
+for (i in 1:length(y_pred)){
+  output[i]<-rpois(1,y_pred[i])
+}
+hist(output)
+
+# Prob. of no bidders
+p_no_bid <- sum(output < 0.5) / length(output)
+cat("Pr(no bidders) =", round(p_no_bid, 3))
+```
+
+Assuming that a predicted count of less than 0.5 means the number of bidders will be 0.
+
+
+
+#Question-3
+
+# a) 
+Write a function in R that simulates data from the AR(1)-process:
+
+$$ xt=μ+\phi*(xt−1−μ)+εt,εt∼N(0,σ^2)  $$ 
+
+Start the process at x1 = mu and then simulate values for xt for t = 2, 3 . . . , T and return the vector x1:T containing all time points. Use mu = 9, sigma^2 = 4 and T = 250 and look at some different realizations (simulations) of x1:T for values of phi between −1 and 1 (this is the interval of phi where the AR(1)-process is stationary). Include a plot of at least one realization in the report. What effect does the value of phi have on x1:T ?
+
+```{r}
+#Q.3) a)
+
+mu <- 9 
+sigma <- 2
+T <- 250 
+
+phi<- runif(1,min = -1,max = 1)
+
+data_points<-c()
+data_points[1]<- mu 
+
+AR <- function(mu,sigma_squared,phi,T){
+  for (i in 2:T){
+   data_points[i]<<-mu + phi*(data_points[i-1] - mu) + rnorm(1,mean = 0, sd = 2)
+  }
+}
+
+AR(mu,sigma_squared,-0.9,T)
+hist(data_points, main = paste("for phi:",-0.9))
+AR(mu,sigma_squared,0.9,T)
+hist(data_points, main = paste("for phi:",0.9))
+
+```
+
+As we move the phi values from -1 to 1, the data becomes more concentrated to particular values as we can see from the above histograms. 
+
+
+#b) 
+Use your function from a) to simulate two AR(1)-processes, x1:T with phi = 0.3 and y1:T with phi = 0.97. Now, treat your simulated vectors as synthetic data, and treat the values of mu, phi and sigma^2 as unknown parameters. Implement Stan code that samples from the posterior of the three parameters, using suitable non-informative priors of your choice. 
+
+ # The <lower=0> constraint ensures that N cannot be negative.
+
+  #If dont explictly write  " mu ~ uniform(-10, 10);" , it will assume that the parameter is uniform. 
+  
+```{r include=FALSE}
+#Q.3) b)
+
+AR(mu,sigma_squared,0.3,T)
+data_1<-data_points
+data_1_length<-length(data_1)
+AR(mu,sigma_squared,0.97,T)
+data_2<-data_points
+data_2_length<-length(data_2)
+
+
+StanModel = '
+
+data {
+  int<lower=0> N;  
+  vector[N] y; 
+}
+parameters {
+  real mu;
+  real phi; 
+  real<lower=0> sigma2;
+  real epsilon; 
+}
+model {
+  mu ~ uniform(-10, 10);  
+  phi ~ uniform(-1, 1);
+  sigma2 ~ uniform(0,10); 
+  
+  for (i in 2:N){ 
+    y[i] ~ normal (mu + phi*(y[i-1]-mu),sqrt(sigma2));
+  }
+
+}
+'
+
+#For 1st data points 
+data <- list(N=data_1_length, y=data_1)
+warmup <- 1000 
+# The warmup parameter specifies the number of initial iterations that will be used to allow the Markov Chain Monte Carlo (MCMC) algorithm to converge to the posterior distribution. These iterations are discarded and not used in the final analysis.
+
+niter <- 2000
+#The niter parameter specifies the total number of iterations for the MCMC sampling process. This includes both the warmup iterations and the sampling iterations. 
+
+fit <- stan(model_code=StanModel,data=data, warmup=warmup,iter=niter,chains=4)
+
+#he chains parameter specifies the number of separate Markov Chain Monte Carlo (MCMC) chains to run.By using 4 chains, the model runs four separate MCMC simulations, starting from different initial values, and the results can be compared to check for consistency.
+
+# Extract posterior samples
+postDraws <- extract(fit)
+
+values1<-summary(fit)$summary
+
+
+#For 2nd data points 
+data2 <- list(N=data_2_length, y=data_2)
+warmup <- 1000
+niter <- 2000
+fit <- stan(model_code=StanModel,data=data2, warmup=warmup,iter=niter,chains=4)
+
+# Extract posterior samples
+postDraws1 <- extract(fit)
+
+values2<-summary(fit)$summary
+
+```
+
+#i) 
+Report the posterior mean, 95% credible intervals and the number of effective posterior samples for the three inferred parameters for each of the simulated AR(1)-process. Are you able to estimate the true values?
+```{r}
+#i) 
+
+
+#for the 1st data points:
+cat("for phi = 0.3 data points\n")
+cat("mu:","(posterior mean:",values1[1,1],")\n")
+cat("mu:","(95% interval:",paste0("[", round(qnorm(0.025, mean=mean(postDraws$mu),sd=sd(postDraws$mu)), 3), ", ", round(qnorm(0.975, mean=mean(postDraws$mu),sd=sd(postDraws$mu)), 3), "]"),")\n")
+cat("mu:","(effective samples:",values1[1,9],")\n")
+
+
+
+cat("phi:","(posterior mean:",values1[2,1],")\n")
+cat("phi:","(95% interval:",paste0("[", round(qnorm(0.025, mean=mean(postDraws$phi),sd=sd(postDraws$phi)), 3), ", ", round(qnorm(0.975, mean=mean(postDraws$phi),sd=sd(postDraws$phi)), 3), "]"),")\n")
+cat("phi:","(effective samples:",values1[2,9],")\n")
+
+
+
+cat("sigma2:","(posterior mean:",values1[3,1],")\n")
+cat("sigma2:","(95% interval:",paste0("[", round(qnorm(0.025, mean=mean(postDraws$sigma2),sd=sd(postDraws$sigma2)), 3), ", ", round(qnorm(0.975, mean=mean(postDraws$sigma2),sd=sd(postDraws$sigma2)), 3), "]"),")\n")
+cat("sigma2:","(effective samples:",values1[3,9],")\n")
+
+
+cat("epsilon:","(posterior mean:",values1[4,1],")\n")
+cat("epsilon:","(95% interval:",paste0("[", round(qnorm(0.025, mean=mean(postDraws$epsilon),sd=sd(postDraws$epsilon)), 3), ", ", round(qnorm(0.975, mean=mean(postDraws$epsilon),sd=sd(postDraws$epsilon)), 3), "]"),")\n")
+cat("epsilon:","(effective samples:",values1[4,9],")\n")
+
+cat("\n")
+cat("\n")
+#For the 2nd data points
+cat("for phi = 0.97 data points\n")
+cat("mu:","(posterior mean:",values2[1,1],")\n")
+cat("mu:","(95% interval:",paste0("[", round(qnorm(0.025, mean=mean(postDraws1$mu),sd=sd(postDraws1$mu)), 3), ", ", round(qnorm(0.975, mean=mean(postDraws1$mu),sd=sd(postDraws1$mu)), 3), "]"),")\n")
+cat("mu:","(effective samples:",values2[1,9],")\n")
+
+
+
+cat("phi:","(posterior mean:",values2[2,1],")\n")
+cat("phi:","(95% interval:",paste0("[", round(qnorm(0.025, mean=mean(postDraws1$phi),sd=sd(postDraws1$phi)), 3), ", ", round(qnorm(0.975, mean=mean(postDraws1$phi),sd=sd(postDraws1$phi)), 3), "]"),")\n")
+cat("phi:","(effective samples:",values2[2,9],")\n")
+
+
+
+cat("sigma2:","(posterior mean:",values2[3,1],")\n")
+cat("sigma2:","(95% interval:",paste0("[", round(qnorm(0.025, mean=mean(postDraws1$sigma2),sd=sd(postDraws1$sigma2)), 3), ", ", round(qnorm(0.975, mean=mean(postDraws1$sigma2),sd=sd(postDraws1$sigma2)), 3), "]"),")\n")
+cat("sigma2:","(effective samples:",values2[3,9],")\n")
+
+
+cat("epsilon:","(posterior mean:",values2[4,1],")\n")
+cat("epsilon:","(95% interval:",paste0("[", round(qnorm(0.025, mean=mean(postDraws1$epsilon),sd=sd(postDraws1$epsilon)), 3), ", ", round(qnorm(0.975, mean=mean(postDraws1$epsilon),sd=sd(postDraws1$epsilon)), 3), "]"),")\n")
+cat("epsilon:","(effective samples:",values2[4,9],")\n")
+```
+
+As we can see above, we are able get similar values for phi and mu to the true values for both the datasets while the sigma2 values for both the datasets can be seen to differ from the true value, this could be cause the data might have some noise. 
+
+#ii) 
+For each of the two data sets, evaluate the convergence of the samplers and plot the joint posterior of mu and phi. Comments?
+
+```{r}
+
+#For the 1st data points
+plot(postDraws$mu, type = "l",main = "mu for 1st dataset")
+
+
+plot(postDraws$phi, type = "l",main = "phi for 1st dataset")
+
+
+
+#For the 2nd data points
+plot(postDraws1$mu, type = "l",main = "mu for 2nd dataset")
+
+
+plot(postDraws1$phi, type = "l",main = "phi for 2nd dataset")
+```
+
+
+
+```{r}
+pairs(cbind(postDraws$mu,postDraws$phi))
+
+pairs(cbind(postDraws1$mu,postDraws1$phi))
+
+```
+
+
+We can see that there is convergence for the 2 parameters. For the first dataset, for the range of phi values, the mu value is hovering around 9. 
+
+For the second dataset, for the range of phi values, the mu value is hovering around 9 as well. 
